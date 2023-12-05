@@ -1,0 +1,80 @@
+#!/usr/bin/python3
+
+import requests
+import socket
+import hashlib
+import os
+import time
+import argparse
+
+#
+# CONFIGURATION
+# See README for details
+#
+API_ENDPOINT = "YOUR_API_ENDPOINT"
+
+# If True, this will re-alert after 4 hours of being in error state.
+REALERT_AFTER_4_HOURS = False
+
+# True if you don't want to use files for realerting
+DONT_USE_FILES = False
+
+parser = argparse.ArgumentParser( description='Triggers an grafana on-call alert' )
+parser.add_argument( 'args', metavar='N', nargs='+', help='issue description' )
+parser.add_argument( '--description', help='Description of the issue' )
+parser.add_argument( '--dontUseFiles', action='store_true', help='True if you wish to not use files for deduping alerts' )
+parser.add_argument( '--realert', action='store_true', help='True if you wish to realert after 4 hours' )
+args = parser.parse_args()
+
+#
+# END CONFIGURATION
+#
+
+if API_ENDPOINT == "YOUR_API_ENDPOINT":
+    print("Must specify API_ENDPOINT!")
+    exit( 1 )
+
+EVENT=args.args[0]
+HOST=socket.gethostname()
+DESCRIPTION=EVENT
+if args.description:
+    DESCRIPTION=args.description
+# Technically the --description is optional
+if len(args.args) >= 2:
+    DESCRIPTION=args.args[1]
+if args.dontUseFiles:
+    DONT_USE_FILES=args.dontUseFiles
+if args.realert:
+    REALERT_AFTER_4_HOURS=args.realert
+
+m = hashlib.md5()
+m.update((HOST + ":" + EVENT).encode('utf-8'))
+
+file = "/tmp/grafana-" + m.hexdigest()
+if not DONT_USE_FILES and os.path.isfile( file ):
+    st = os.stat( file )
+    # If the alert is over 4 hours old, re-fire.
+    # TODO: Consider resolving the initial alert?
+    if not REALERT_AFTER_4_HOURS or time.time() - st.st_mtime < 14400:
+        print("%s exists" % file)
+        exit( 1 )
+
+try:
+    data = {
+        'message': EVENT + " failed on " + HOST,
+        'description': DESCRIPTION,
+        'entity': HOST,
+        'state': 'ERROR'
+    }
+
+    body = requests.post(API_ENDPOINT, json=data)
+
+    print('body: {}'.format( body ))
+
+    if not DONT_USE_FILES:
+        f = open( file, "w+" )
+        f.write( format(body) )
+        f.close()
+except Exception as err:
+    print("Exception when calling URL: %s\n" % err)
+    exit( 1 )

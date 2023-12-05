@@ -1,0 +1,55 @@
+#!/usr/bin/python3
+
+import requests
+import socket
+import hashlib
+import os
+import argparse
+
+#
+# CONFIGURATION
+# See README for details
+#
+API_ENDPOINT = "YOUR_API_ENDPOINT"
+
+#
+# END CONFIGURATION
+#
+
+# True if you don't want to use files for realerting
+DONT_USE_FILES = False
+
+parser = argparse.ArgumentParser( description='Resolves an grafana on-call alert' )
+parser.add_argument( 'args', metavar='N', nargs='+', help='issue' )
+args = parser.parse_args()
+
+if API_ENDPOINT == "YOUR_API_ENDPOINT":
+    print("Must specify API_ENDPOINT!")
+    exit( 1 )
+
+EVENT=args.args[0]
+HOST=socket.gethostname()
+
+m = hashlib.md5()
+m.update((HOST + ":" + EVENT).encode('utf-8'))
+
+file = "/tmp/grafana-" + m.hexdigest()
+if not os.path.isfile( file ):
+    print("%s does not exist" % file)
+    exit( 1 )
+
+try:
+    data = {
+        'message': EVENT + " failed on " + HOST,
+        'entity': HOST,
+        'state': 'OK'
+    }
+
+    body = requests.post(API_ENDPOINT, json=data)
+
+    print('body: {}'.format( body ))
+
+    os.remove( file )
+except Exception as err:
+    print("Exception when calling URL: %s\n" % err)
+    exit( 1 )
