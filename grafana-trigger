@@ -1,11 +1,11 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
-import requests
-import socket
+import argparse
 import hashlib
 import os
+import requests
+import socket
 import time
-import argparse
 
 #
 # CONFIGURATION
