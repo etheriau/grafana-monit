@@ -5,6 +5,7 @@ import hashlib
 import os
 import requests
 import socket
+import sys
 import time
 
 #
@@ -13,13 +14,22 @@ import time
 #
 API_ENDPOINT = "YOUR_API_ENDPOINT"
 
+# Used when API_ENDPOINT is left as is: the GRAFANA_ONCALL_ENDPOINT environment variable, then this file.
+ENDPOINT_FILE = "/etc/monit/grafana-oncall.conf"
+
+# Where the open-alert files live; GRAFANA_MONIT_STATE_DIR overrides it. Falls back to /tmp if it cannot be created.
+STATE_DIR = "/var/lib/grafana-monit"
+
 # If True, this will re-alert after 4 hours of being in error state.
 REALERT_AFTER_4_HOURS = False
 
 # True if you don't want to use files for realerting
 DONT_USE_FILES = False
 
-parser = argparse.ArgumentParser( description='Triggers an grafana on-call alert' )
+# Seconds to wait for Grafana before giving up.
+TIMEOUT = 30
+
+parser = argparse.ArgumentParser( description='Triggers a Grafana OnCall alert' )
 parser.add_argument( 'args', metavar='N', nargs='+', help='issue description' )
 parser.add_argument( '--description', help='Description of the issue' )
 parser.add_argument( '--dontUseFiles', action='store_true', help='True if you wish to not use files for deduping alerts' )
@@ -30,9 +40,39 @@ args = parser.parse_args()
 # END CONFIGURATION
 #
 
-if API_ENDPOINT == "YOUR_API_ENDPOINT":
-    print("Must specify API_ENDPOINT!")
-    exit( 1 )
+def endpoint():
+    if API_ENDPOINT != "YOUR_API_ENDPOINT":
+        return API_ENDPOINT
+    if os.environ.get( "GRAFANA_ONCALL_ENDPOINT" ):
+        return os.environ["GRAFANA_ONCALL_ENDPOINT"].strip()
+    if os.path.isfile( ENDPOINT_FILE ):
+        with open( ENDPOINT_FILE ) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith( "#" ):
+                    return line
+    return None
+
+def state_dir():
+    directory = os.environ.get( "GRAFANA_MONIT_STATE_DIR", STATE_DIR )
+    try:
+        os.makedirs( directory, exist_ok=True )
+        return directory
+    except OSError:
+        return "/tmp"
+
+def digest( value ):
+    try:
+        m = hashlib.md5( usedforsecurity=False )
+    except TypeError:
+        m = hashlib.md5()
+    m.update( value.encode( 'utf-8' ) )
+    return m.hexdigest()
+
+url = endpoint()
+if url is None:
+    print( "Must specify API_ENDPOINT, GRAFANA_ONCALL_ENDPOINT or %s!" % ENDPOINT_FILE )
+    sys.exit( 1 )
 
 EVENT=args.args[0]
 HOST=socket.gethostname()
@@ -47,17 +87,17 @@ if args.dontUseFiles:
 if args.realert:
     REALERT_AFTER_4_HOURS=args.realert
 
-m = hashlib.md5()
-m.update((HOST + ":" + EVENT).encode('utf-8'))
-
-file = "/tmp/grafana-" + m.hexdigest()
-if not DONT_USE_FILES and os.path.isfile( file ):
-    st = os.stat( file )
+name = "grafana-" + digest( HOST + ":" + EVENT )
+file = os.path.join( state_dir(), name )
+# Earlier versions kept the file in /tmp; an alert opened before an upgrade is still found there.
+existing = file if os.path.isfile( file ) else os.path.join( "/tmp", name )
+if not DONT_USE_FILES and os.path.isfile( existing ):
+    st = os.stat( existing )
     # If the alert is over 4 hours old, re-fire.
     # TODO: Consider resolving the initial alert?
     if not REALERT_AFTER_4_HOURS or time.time() - st.st_mtime < 14400:
-        print("%s exists" % file)
-        exit( 1 )
+        print("%s exists" % existing)
+        sys.exit( 1 )
 
 try:
     data = {
@@ -67,14 +107,14 @@ try:
         'state': 'ERROR'
     }
 
-    body = requests.post(API_ENDPOINT, json=data)
+    body = requests.post( url, json=data, timeout=TIMEOUT )
+    body.raise_for_status()
 
     print('body: {}'.format( body ))
 
     if not DONT_USE_FILES:
-        f = open( file, "w+" )
-        f.write( format(body) )
-        f.close()
+        with open( file, "w+" ) as f:
+            f.write( format(body) )
 except Exception as err:
     print("Exception when calling URL: %s\n" % err)
-    exit( 1 )
+    sys.exit( 1 )
